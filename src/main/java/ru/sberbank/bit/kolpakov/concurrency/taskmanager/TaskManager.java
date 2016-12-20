@@ -7,9 +7,9 @@ public interface TaskManager {
     Context execute(Runnable callback, Runnable... runnables);
 
     interface Context {
-        int getTotalFinishedTaskCount();
         int getFailedTaskCount();
         int getSuccessFinishedTaskCount();
+        int getInterruptedTaskCount();
         void interrupt();
         boolean isFinished();
     }

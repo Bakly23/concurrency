@@ -12,30 +12,32 @@ public class TaskManagerImpl implements TaskManager {
     }
 
     private class ContextImpl implements TaskManager.Context {
-        private final List<Thread> workers;
+        private static final int NUMBER_OF_WORKER_THREADS = 4;
         private final List<Runnable> tasks;
         private final Runnable callback;
-        private boolean isFinished;
+        private volatile boolean isInterrupted;
+        private volatile boolean hasCountedInterruptedTasks;
+        private volatile boolean isFinished;
         private final AtomicInteger successCount;
         private final AtomicInteger failCount;
-        private final AtomicInteger finishedWorkers;
+        private int interruptedTaskCount;
+        private int finishedJobWorkers;
 
         ContextImpl(Runnable callback, Runnable... runnables) {
             this.callback = callback;
             tasks = Arrays.stream(runnables).collect(Collectors.toList());
             successCount = new AtomicInteger();
             failCount = new AtomicInteger();
-            finishedWorkers = new AtomicInteger();
-            workers = IntStream
-                    .range(0, 4)
+            interruptedTaskCount = 0;
+            IntStream
+                    .range(0, NUMBER_OF_WORKER_THREADS)
                     .mapToObj(i -> new Thread(new Worker()))
-                    .collect(Collectors.toList());
-            workers.forEach(Thread::start);
+                    .forEach(Thread::start);
         }
 
         @Override
-        public int getTotalFinishedTaskCount() {
-            return successCount.get() + failCount.get();
+        public synchronized int getInterruptedTaskCount() {
+            return interruptedTaskCount;
         }
 
         @Override
@@ -49,56 +51,53 @@ public class TaskManagerImpl implements TaskManager {
         }
 
         @Override
-        public synchronized void interrupt() {
-            isFinished = false;
+        public void interrupt() {
+            isInterrupted = true;
         }
 
         @Override
-        public synchronized boolean isFinished() {
+        public boolean isFinished() {
             return isFinished;
         }
 
-        private void incrementSuccessFinishedTaskCount() {
-            successCount.increment();
+        private synchronized void interruptTaskManager() {
+            if(!hasCountedInterruptedTasks) {
+                interruptedTaskCount = tasks.size();
+                hasCountedInterruptedTasks = true;
+            }
         }
 
-        private void incrementFailedTaskCount() {
-            failCount.increment();
+        private synchronized void finishTaskManager() {
+            ++finishedJobWorkers;
+            if(finishedJobWorkers == NUMBER_OF_WORKER_THREADS) {
+                callback.run();
+                isFinished = true;
+            }
         }
 
         private synchronized Runnable getTask() {
             return tasks.isEmpty() ? null : tasks.remove(0);
         }
 
-        private synchronized boolean isEmpty() {
-            return tasks.isEmpty();
-        }
-
         private class Worker implements Runnable {
             @Override
             public void run() {
-                while (!isFinished() || !isEmpty()) {
+                while (!isInterrupted) {
                     Runnable task = getTask();
                     if (task != null) {
                         try {
                             task.run();
-                            incrementSuccessFinishedTaskCount();
+                            successCount.increment();
                         } catch (Exception e) {
-                            incrementFailedTaskCount();
+                            failCount.increment();
                         }
                     } else {
                         break;
                     }
                 }
-                if(allWorkersFinished()) {
-                    callback.run();
-                }
+                interruptTaskManager();
+                finishTaskManager();
             }
-        }
-
-        private synchronized boolean allWorkersFinished() {
-            finishedWorkers.increment();
-            return workers.size() == finishedWorkers.get();
         }
     }
 }
